@@ -12,6 +12,7 @@ from openjarvis.channels._stubs import (
 # Trigger registration of built-in channels.
 # Each module uses @ChannelRegistry.register() — importing is sufficient.
 _CHANNEL_MODULES = [
+    "android_sim",
     "telegram",
     "discord_channel",
     "slack",
