@@ -1,0 +1,172 @@
+/*
+ * The shell's layout.
+ *
+ * Three surfaces, one screen: a wall panel or TV seen from across a room, a
+ * desktop browser, and a phone in one hand. The type scale grows with the
+ * viewport because a 1080p panel is read from three metres away, not thirty
+ * centimetres.
+ */
+
+.ng-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-primary);
+  --ng-gutter: 1.25rem;
+  --ng-tile: 4.25rem;
+  --ng-clock: 3.25rem;
+  --ng-greet: 1.6rem;
+}
+
+@media (min-width: 900px) {
+  .ng-shell {
+    --ng-gutter: 2.5rem;
+    --ng-tile: 5.25rem;
+    --ng-clock: 4.5rem;
+    --ng-greet: 2.1rem;
+  }
+}
+
+@media (min-width: 1500px) {
+  .ng-shell {
+    --ng-gutter: 4rem;
+    --ng-tile: 6.5rem;
+    --ng-clock: 6rem;
+    --ng-greet: 2.9rem;
+  }
+}
+
+.ng-shell-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.1rem var(--ng-gutter) 0;
+  flex-wrap: nowrap;
+}
+
+.ng-brand {
+  font-weight: 600;
+  letter-spacing: 0.26em;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+
+.ng-status {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-width: 0;
+}
+
+/* On a phone the status words would push the row into two lines; the icon
+   and its colour still carry the meaning, and the title attribute carries
+   the words. */
+.ng-status-label {
+  display: none;
+  white-space: nowrap;
+}
+
+@media (min-width: 700px) {
+  .ng-status-label {
+    display: inline;
+  }
+}
+
+.ng-shell-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  /* The bottom padding keeps the last row of tiles clear of the drawer
+     pill, which on a phone sits just above the ask bar. */
+  padding: 1.75rem var(--ng-gutter) 0.5rem;
+}
+
+@media (min-width: 900px) {
+  .ng-shell-main {
+    justify-content: center;
+    gap: 3rem;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+}
+
+.ng-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem 2rem;
+  align-items: flex-start;
+}
+
+/* The clock and the greeting are the two things read from across a room.
+   Neither may break onto a second line. */
+.ng-clock,
+.ng-greeting {
+  white-space: nowrap;
+}
+
+.ng-greeting-block {
+  flex: 0 0 auto;
+}
+
+.ng-glance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  flex: 1 1 22rem;
+}
+
+.ng-glance > * {
+  flex: 1 1 13rem;
+  max-width: 24rem;
+}
+
+.ng-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1.35rem 1rem;
+  width: 100%;
+  max-width: calc(var(--ng-tile) * 4 + 16rem);
+}
+
+/* In normal flow on a phone, so nothing floats over the tiles; pinned to
+   the bottom of the panel on a wide screen, where there is room. */
+.ng-ask {
+  padding: 0.75rem var(--ng-gutter) calc(1.25rem + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 900px) {
+  .ng-ask {
+    position: sticky;
+    bottom: 0;
+    padding-top: 1.25rem;
+    background: linear-gradient(
+      to top,
+      var(--color-bg-primary) 55%,
+      transparent
+    );
+  }
+}
+
+/* On a phone the drawer sits in the page, above the ask bar, because a
+   floating pill there would cover the last row of tiles. On a wide screen
+   it pins to the bottom-right corner as in the design. */
+.ng-drawer {
+  padding: 0 var(--ng-gutter) 0.75rem;
+  margin-left: auto;
+  width: min(31rem, 100%);
+  z-index: 20;
+}
+
+@media (min-width: 900px) {
+  .ng-drawer {
+    position: fixed;
+    right: var(--ng-gutter);
+    bottom: 1.75rem;
+    padding: 0;
+    width: min(31rem, calc(100vw - 2 * var(--ng-gutter)));
+  }
+}

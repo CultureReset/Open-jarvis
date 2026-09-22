@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Routes, Route } from 'react-router';
+import { Routes, Route, useLocation } from 'react-router';
 import { Layout } from './components/Layout';
 import { ChatPage } from './pages/ChatPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -9,6 +9,7 @@ import { AgentsPage } from './pages/AgentsPage';
 import { DataSourcesPage } from './pages/DataSourcesPage';
 import { LogsPage } from './pages/LogsPage';
 import { PhonePage } from './pages/PhonePage';
+import { ShellPage } from './pages/ShellPage';
 import { CommandPalette } from './components/CommandPalette';
 import { SetupScreen } from './components/SetupScreen';
 import { Toaster } from './components/ui/sonner';
@@ -158,6 +159,12 @@ export default function App() {
 
   const toggleSystemPanel = useAppStore((s) => s.toggleSystemPanel);
 
+  // The shell is the box's own screen -- a wall panel, a TV, the phone. The
+  // developer chrome (update prompts, the savings opt-in, the command
+  // palette, toasts) belongs to the tool, not to a panel hanging in
+  // somebody's restaurant, so none of it renders there.
+  const onShell = useLocation().pathname.startsWith('/shell');
+
   // Global keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -181,8 +188,12 @@ export default function App() {
 
   return (
     <>
-      <UpdateChecker />
+      {!onShell && <UpdateChecker />}
       <Routes>
+        {/* The shell is the box's own surface: a wall panel, a TV, or a
+            phone. It renders outside the developer Layout because it is not
+            a page inside a tool -- it is the whole screen. */}
+        <Route path="shell" element={<ShellPage />} />
         <Route element={<Layout />}>
           <Route index element={<ChatPage />} />
           <Route path="dashboard" element={<DashboardPage />} />
@@ -194,9 +205,9 @@ export default function App() {
           <Route path="phone" element={<PhonePage />} />
         </Route>
       </Routes>
-      <Toaster position="bottom-right" />
-      {commandPaletteOpen && <CommandPalette />}
-      {optInModalOpen && (
+      {!onShell && <Toaster position="bottom-right" />}
+      {!onShell && commandPaletteOpen && <CommandPalette />}
+      {!onShell && optInModalOpen && (
         <OptInModal onClose={() => setOptInModalOpen(false)} />
       )}
     </>

@@ -106,6 +106,10 @@ interface Settings {
   temperature: number;
   maxTokens: number;
   speechEnabled: boolean;
+  // What the owner is called on the shell's greeting. Empty by default and
+  // only ever set by the owner: a box that greets somebody by a name nobody
+  // gave it is addressing a person who does not exist.
+  ownerName: string;
 }
 
 function loadSettings(): Settings {
@@ -119,6 +123,7 @@ function loadSettings(): Settings {
     temperature: 0.7,
     maxTokens: 4096,
     speechEnabled: false,
+    ownerName: '',
   };
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
