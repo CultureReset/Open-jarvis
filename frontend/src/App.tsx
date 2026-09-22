@@ -10,6 +10,7 @@ import { DataSourcesPage } from './pages/DataSourcesPage';
 import { LogsPage } from './pages/LogsPage';
 import { PhonePage } from './pages/PhonePage';
 import { ShellPage } from './pages/ShellPage';
+import { TvPage } from './pages/TvPage';
 import { CommandPalette } from './components/CommandPalette';
 import { SetupScreen } from './components/SetupScreen';
 import { Toaster } from './components/ui/sonner';
@@ -163,7 +164,8 @@ export default function App() {
   // developer chrome (update prompts, the savings opt-in, the command
   // palette, toasts) belongs to the tool, not to a panel hanging in
   // somebody's restaurant, so none of it renders there.
-  const onShell = useLocation().pathname.startsWith('/shell');
+  const path = useLocation().pathname;
+  const onShell = path.startsWith('/shell') || path.startsWith('/tv');
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -194,6 +196,7 @@ export default function App() {
             phone. It renders outside the developer Layout because it is not
             a page inside a tool -- it is the whole screen. */}
         <Route path="shell" element={<ShellPage />} />
+        <Route path="tv" element={<TvPage />} />
         <Route element={<Layout />}>
           <Route index element={<ChatPage />} />
           <Route path="dashboard" element={<DashboardPage />} />

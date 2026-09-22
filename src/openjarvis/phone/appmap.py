@@ -250,9 +250,24 @@ def builtin_map_path(map_id: str) -> Path:
 
 
 def list_app_maps() -> List[str]:
+    """The App Maps shipped here.
+
+    The data directory also holds files that are not App Maps, such as the
+    display-name hints, so membership is decided by what is in the file --
+    an [app_map] table -- rather than by where it sits.
+    """
     if not DATA_DIR.exists():
         return []
-    return sorted(path.stem for path in DATA_DIR.glob("*.toml"))
+    found = []
+    for path in sorted(DATA_DIR.glob("*.toml")):
+        try:
+            with open(path, "rb") as handle:
+                data = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        if isinstance(data.get("app_map"), dict):
+            found.append(path.stem)
+    return found
 
 
 def missing_on_screen(

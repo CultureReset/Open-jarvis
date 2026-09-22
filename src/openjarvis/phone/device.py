@@ -77,6 +77,17 @@ PERMITTED_COMMANDS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^dumpsys package [A-Za-z0-9_.]{1,128}$"),
     re.compile(r"^wm size$"),
     re.compile(r"^echo ok$"),
+    # Asking the device what is installed, which is what a launcher does to
+    # draw its own app list. Both are read-only and neither touches message
+    # content: `pm list packages -3` names the apps the owner installed, and
+    # resolve-activity names the activity a launcher icon would start. The
+    # write forms of pm -- install, uninstall, grant, disable -- are not here
+    # and never will be.
+    re.compile(r"^pm list packages -3$"),
+    re.compile(
+        r"^cmd package resolve-activity --brief"
+        r" -c android\.intent\.category\.LAUNCHER [A-Za-z0-9_.]{1,128}$"
+    ),
 )
 
 

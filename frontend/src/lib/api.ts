@@ -655,6 +655,35 @@ export async function sendblueTest(
   return res.json();
 }
 
+export interface PhoneApp {
+  package: string;
+  activity: string;
+  label: string;
+  /** The phone did not give a name; this one was worked out from the package. */
+  name_is_derived: boolean;
+}
+
+export interface PhoneApps {
+  attached: boolean;
+  serial?: string;
+  apps: PhoneApp[];
+  /** Why the list is empty, when it is. */
+  reason?: string;
+}
+
+/**
+ * The apps installed on the box's phone.
+ *
+ * An absent phone comes back attached: false with a reason, never a
+ * remembered list -- a rail of icons for a phone that is not plugged in
+ * would be a lie the owner taps on.
+ */
+export async function fetchPhoneApps(): Promise<PhoneApps> {
+  const res = await apiFetch('/v1/channels/android_sim/apps');
+  if (!res.ok) throw new Error(`Failed to list the phone's apps: ${res.status}`);
+  return res.json();
+}
+
 export async function sendblueHealth(): Promise<{ channel_connected: boolean; bridge_wired: boolean; ready: boolean }> {
   const res = await apiFetch(`/v1/channels/sendblue/health`);
   if (!res.ok) return { channel_connected: false, bridge_wired: false, ready: false };

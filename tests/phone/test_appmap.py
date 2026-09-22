@@ -189,6 +189,15 @@ def test_google_messages_is_among_the_shipped_maps():
     assert "google_messages" in list_app_maps()
 
 
+def test_a_data_file_that_is_not_an_app_map_is_not_listed_as_one():
+    # data/ also holds the display-name hints, which have no [app_map] table.
+    assert "app_labels" not in list_app_maps()
+    assert all(
+        load_app_map(builtin_map_path(name), calibrating=True).id
+        for name in list_app_maps()
+    )
+
+
 # --- the calibration report ---------------------------------------------
 
 

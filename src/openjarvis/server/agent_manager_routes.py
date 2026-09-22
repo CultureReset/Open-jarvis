@@ -2579,7 +2579,9 @@ def create_agent_manager_router(
 
     # ── Real-SIM channel (the agent's own phone) ─────────────
 
-    android_sim_router = APIRouter(prefix="/v1/channels/android_sim", tags=["android_sim"])
+    android_sim_router = APIRouter(
+        prefix="/v1/channels/android_sim", tags=["android_sim"]
+    )
 
     @android_sim_router.get("/health")
     async def android_sim_health(request: Request):
@@ -2599,12 +2601,69 @@ def create_agent_manager_router(
         try:
             from openjarvis.channels.android_sim import AndroidSimChannel
         except ImportError:
-            raise HTTPException(status_code=503, detail="Real-SIM channel is unavailable")
+            raise HTTPException(
+                status_code=503, detail="Real-SIM channel is unavailable"
+            )
 
         probe = AndroidSimChannel()
         health = probe.health()
         health["bridge_wired"] = False
         return health
+
+    @android_sim_router.get("/apps")
+    async def android_sim_apps(request: Request):
+        """The apps installed on the box's phone.
+
+        The shell shows the owner's own apps because the box can already
+        reach them. Each app reports whether its display name was looked up
+        or derived from its package, so the screen never presents a guess as
+        the app's real name. An absent or unreachable phone is an empty list
+        plus the reason, never a remembered one: a rail of icons for a phone
+        that is not plugged in would be a lie the owner taps on.
+        """
+        import os
+
+        from openjarvis.phone.apps import launchable, list_installed
+        from openjarvis.phone.device import PhoneDevice, ScreenOnlyShell
+
+        serial = os.environ.get("NG_ANDROID_SERIAL", "")
+        if not serial:
+            return {
+                "apps": [],
+                "attached": False,
+                "reason": "No phone configured for this box.",
+            }
+
+        shell = ScreenOnlyShell(serial)
+        if not shell.available():
+            return {
+                "apps": [],
+                "attached": False,
+                "reason": "adb is not installed on this box.",
+            }
+
+        device = PhoneDevice(serial, shell)
+        if not device.attached():
+            return {
+                "apps": [],
+                "attached": False,
+                "reason": f"The phone {serial} is not plugged in.",
+            }
+
+        apps = launchable(list_installed(device))
+        return {
+            "attached": True,
+            "serial": serial,
+            "apps": [
+                {
+                    "package": app.package,
+                    "activity": app.activity,
+                    "label": app.label,
+                    "name_is_derived": app.name_is_derived,
+                }
+                for app in apps
+            ],
+        }
 
     return (
         agents_router,

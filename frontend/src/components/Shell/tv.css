@@ -1,0 +1,285 @@
+/*
+ * The TV layout.
+ *
+ * Read from across a room, driven by a remote. Everything is bigger than
+ * the remote-control layout and the app tiles live in rails that slide
+ * sideways rather than a grid that wraps.
+ */
+
+.ng-tv {
+  /* The rails pan under the focus rather than the page growing without
+     bound; a remote has no scrollbar to reach for. Vertical scroll stays
+     available so a mouse or a short screen is not trapped. */
+  height: 100vh;
+  height: 100dvh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--color-bg-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding-bottom: 1.5rem;
+  --ng-tv-gutter: 3rem;
+  --ng-tv-tile-w: 12rem;
+  --ng-tv-tile-h: 6.25rem;
+}
+
+@media (min-width: 1500px) {
+  .ng-tv {
+    --ng-tv-gutter: 4rem;
+    --ng-tv-tile-w: 13.5rem;
+    --ng-tv-tile-h: 6.75rem;
+  }
+}
+
+/* The top strip. Bigger than the app's, because the complaint about the
+   web app was that the very top could not be read. */
+.ng-tv-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2rem;
+  padding: 1.5rem var(--ng-tv-gutter) 0;
+  flex-wrap: wrap;
+}
+
+/* Clock on the left, greeting beside it, so the top strip costs one band of
+   height instead of four. */
+.ng-tv-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.ng-tv-brand {
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  color: var(--color-text-secondary);
+}
+
+.ng-tv-clock {
+  font-size: clamp(2.6rem, 3.6vw, 4rem);
+  line-height: 1;
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+
+.ng-tv-greeting {
+  font-size: clamp(1.4rem, 1.9vw, 2rem);
+  font-weight: 600;
+  margin: 0;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+
+.ng-tv-status {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  font-size: 1rem;
+}
+
+/* --- the long bars --- */
+
+.ng-tv-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0 var(--ng-tv-gutter);
+}
+
+.ng-bar {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  padding: 0.8rem 1.4rem;
+  cursor: pointer;
+  color: var(--color-text-primary);
+  font: inherit;
+}
+
+.ng-bar[data-focused='true'] {
+  outline: 3px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+.ng-bar-title {
+  flex: 0 0 9rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.ng-bar-entries {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 1.05rem;
+}
+
+.ng-bar-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  white-space: nowrap;
+}
+
+.ng-bar-when {
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ng-bar-note {
+  flex: 1;
+  color: var(--color-text-secondary);
+  font-size: 1.02rem;
+}
+
+.ng-bar-more {
+  color: var(--color-text-secondary);
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+.ng-bar-expanded {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0 1.4rem 1.1rem 11.65rem;
+  font-size: 1.05rem;
+}
+
+/* --- the rails --- */
+
+.ng-rails {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.ng-rail-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.9rem;
+  padding: 0 var(--ng-tv-gutter);
+  margin-bottom: 0.15rem;
+}
+
+.ng-rail-title {
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.ng-rail-sub {
+  font-size: 0.98rem;
+  color: var(--color-text-secondary);
+}
+
+.ng-rail-viewport {
+  overflow: hidden;
+  padding: 0.35rem 0;
+}
+
+.ng-rail-track {
+  display: flex;
+  gap: 1rem;
+  padding: 0 var(--ng-tv-gutter);
+  transition: transform 220ms ease-out;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ng-rail-track {
+    transition: none;
+  }
+}
+
+.ng-rail-tile {
+  flex: 0 0 var(--ng-tv-tile-w);
+  height: var(--ng-tv-tile-h);
+  border-radius: 0.9rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  padding: 0.75rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-start;
+  text-align: left;
+  cursor: pointer;
+  color: var(--color-text-primary);
+  font: inherit;
+  overflow: hidden;
+}
+
+.ng-rail-tile[data-focused='true'] {
+  outline: 3px solid var(--color-accent);
+  outline-offset: 3px;
+  transform: scale(1.03);
+}
+
+.ng-rail-badge {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.65rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  flex: 0 0 auto;
+}
+
+.ng-rail-label {
+  font-size: 1.05rem;
+  font-weight: 500;
+  line-height: 1.2;
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ng-rail-detail {
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ng-rail-empty {
+  padding: 0 var(--ng-tv-gutter);
+  font-size: 1.02rem;
+  color: var(--color-text-secondary);
+}
+
+.ng-rail-error {
+  padding: 0 var(--ng-tv-gutter);
+  font-size: 1.02rem;
+  color: var(--color-error);
+}
+
+/* --- the ask bar --- */
+
+.ng-tv-ask {
+  padding: 0.5rem var(--ng-tv-gutter) 0;
+  max-width: 54rem;
+}

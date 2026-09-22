@@ -417,10 +417,12 @@ describe('nothing in the shell ships a name', () => {
       import: 'default',
     });
     const sources = { ...files, ...page };
-    expect(Object.keys(sources).length).toBeGreaterThan(5);
+    const scanned = Object.keys(sources).filter((path) => !/\.test\.tsx?$/.test(path));
+    expect(scanned.length).toBeGreaterThan(8);
 
     for (const [path, load] of Object.entries(sources)) {
-      if (path.endsWith('Shell.test.tsx')) continue;
+      // A test file names names in order to forbid them.
+      if (/\.test\.tsx?$/.test(path)) continue;
       const source = code((await load()) as string);
       for (const name of NAMES) {
         expect(

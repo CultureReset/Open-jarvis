@@ -101,6 +101,9 @@ class FakePhone:
     swallow_typing: bool = False
     drop_after: int = 0
     clock: int = 0
+    # package -> launcher activity. An empty activity means installed but not
+    # launchable, which real devices have plenty of.
+    installed: Dict[str, str] = field(default_factory=dict)
 
     # --- ScreenOnlyShell surface ---------------------------------------
 
@@ -132,6 +135,17 @@ class FakePhone:
             return ShellResult(0, f"Physical size: {WIDTH}x{HEIGHT}\n", "")
         if command.startswith("dumpsys package"):
             return ShellResult(0, "    versionName=mock.0\n", "")
+        if command == "pm list packages -3":
+            body = "".join(f"package:{name}\n" for name in sorted(self.installed))
+            return ShellResult(0, body, "")
+        if command.startswith("cmd package resolve-activity"):
+            package = command.split()[-1]
+            activity = self.installed.get(package, "")
+            if not activity:
+                return ShellResult(0, "No activity found\n", "")
+            return ShellResult(
+                0, f"priority=0 preferredOrder=0\n{package}/{activity}\n", ""
+            )
         if command.startswith("am force-stop"):
             return ShellResult(0, "", "")
         if command.startswith("am start"):
