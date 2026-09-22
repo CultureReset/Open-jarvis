@@ -1,0 +1,109 @@
+# App Map: Google Messages
+#
+# NOT VALIDATED. These selectors are written from public view identifiers and
+# have not been confirmed against a device. The loader refuses this file
+# unless the caller is calibrating, and it must stay that way until someone
+# has run the calibration against the phone that will use it and recorded the
+# app build below. Every selector here carries a text or content-description
+# fallback, because the resource ids are the part most likely to be wrong.
+
+[app_map]
+id = "google_messages"
+name = "Google Messages"
+version = "0.1.0"
+package = "com.google.android.apps.messaging"
+launch_activity = "com.google.android.apps.messaging.ui.ConversationListActivity"
+
+validated = false
+validated_on = ""
+app_versions = []
+
+side_strategy = "alignment"
+outgoing_left_fraction = 0.4
+
+notes = """
+To validate: attach the phone, open Messages, and run the calibration for
+each screen — the conversation list, a new-conversation screen, and an open
+thread. It reports which named elements it could not find on screen. Fix those
+selectors against the live `uiautomator dump`, then set validated = true and
+put the app's versionName in validated_on.
+
+Alignment is how the two sides of a thread are told apart, the same way a
+person reads the screen: an incoming bubble hugs the left edge, an outgoing
+one sits past the middle. If a future build labels the two kinds distinctly,
+add incoming_bubble/outgoing_bubble selectors and set
+side_strategy = "selector", which is exact.
+"""
+
+[app_map.elements]
+
+conversation_list_anchor = [
+  { resource_id = "conversation_list" },
+  { resource_id = "conversation_list_view" },
+  { content_desc_contains = "conversation list" },
+]
+
+start_new_conversation = [
+  { resource_id = "start_new_conversation_button" },
+  { content_desc_contains = "start chat" },
+  { text_contains = "Start chat" },
+]
+
+conversation_row = [
+  { resource_id = "conversation_name" },
+  { resource_id = "conversation_name_view" },
+]
+
+recipient_field = [
+  { resource_id = "recipient_text_view" },
+  { resource_id = "recipient_editor" },
+  { text_contains = "To" , cls = "EditText" },
+]
+
+recipient_commit = [
+  { resource_id = "contact_picker_create_group" },
+  { text_contains = "Send to" },
+]
+
+compose_field = [
+  { resource_id = "compose_message_text" },
+  { resource_id = "compose_message_view" },
+  { content_desc_contains = "text message" },
+]
+
+send_button = [
+  { resource_id = "send_message_button_icon" },
+  { resource_id = "send_message_button" },
+  { content_desc_contains = "send" },
+]
+
+thread_anchor = [
+  { resource_id = "compose_message_text" },
+  { resource_id = "conversation_messages_recycler_view" },
+]
+
+message_bubble = [
+  { resource_id = "message_text" },
+  { resource_id = "message_text_and_info" },
+]
+
+bubble_timestamp = [
+  { resource_id = "message_status" },
+  { resource_id = "timestamp_text" },
+]
+
+send_failed = [
+  { text_contains = "Not sent" },
+  { text_contains = "Message not sent" },
+  { content_desc_contains = "not sent" },
+]
+
+search_field = [
+  { resource_id = "search_bar" },
+  { content_desc_contains = "search" },
+]
+
+permission_allow = [
+  { resource_id = "permission_allow_button" },
+  { text = "Allow" },
+]

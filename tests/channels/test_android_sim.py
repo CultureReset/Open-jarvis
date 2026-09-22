@@ -1,288 +1,404 @@
-"""Real-SIM channel tests. A fake adb stands in for the phone.
+"""The real-SIM channel: SMS through the box's own phone, by its screen.
 
-Everything here runs with no device attached. What cannot be tested without
-hardware is the transaction code on a specific Android build, and the channel
-says so in its own logs rather than pretending.
+MOCK-BASED. The phone is the simulator in tests/phone/fake_phone.py. These
+tests cover the channel's contract — device binding, the App Map gate, and
+what it will and will not claim about a message — and satisfy no
+physical-device acceptance gate.
 """
 
 from __future__ import annotations
 
-import subprocess
-
 import pytest
 
 from openjarvis.channels._stubs import ChannelStatus
-from openjarvis.channels.android_sim import AndroidSimChannel, parse_sms_rows
+from openjarvis.channels.android_sim import (
+    DEFAULT_APP_MAP,
+    AndroidSimChannel,
+    resolve_app_map,
+)
+from openjarvis.core.registry import ChannelRegistry
+from openjarvis.phone.appmap import UnvalidatedAppMap, builtin_map_path, load_app_map
+from openjarvis.phone.device import PhoneDevice, is_screen_verb
+from openjarvis.phone.messages import MessagesProcedure
+from tests.phone.fake_phone import FakePhone
 
-SERIAL = "test-only-serial"
-AGENT = "+15550000002"
-OWNER = "+15550000001"
-
-
-def done(stdout: str = "", returncode: int = 0, stderr: str = "") -> subprocess.CompletedProcess:
-    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
-
-
-class FakeAdb:
-    """Records shell commands and replays canned provider output."""
-
-    def __init__(self, attached=(SERIAL,), sim="READY", inbox=None, sent=None, fail=()):
-        self.attached = list(attached)
-        self.sim = sim
-        self.inbox = inbox if inbox is not None else []
-        self.sent = sent if sent is not None else []
-        self.fail = set(fail)
-        self.commands: list[str] = []
-        self.serial = SERIAL
-
-    def available(self) -> bool:
-        return "adb" not in self.fail
-
-    def devices(self):
-        return list(self.attached)
-
-    def shell(self, command: str, timeout: int = 20):
-        self.commands.append(command)
-        if "getprop gsm.sim.state" in command:
-            return done(self.sim)
-        if "content://sms/inbox" in command:
-            if "inbox" in self.fail:
-                return done(returncode=1, stderr="permission denied")
-            return done(_rows(self.inbox))
-        if "content://sms/sent" in command:
-            return done(_rows(self.sent))
-        if "service call isms" in command:
-            if "send" in self.fail:
-                return done(returncode=1, stderr="service not found")
-            return done("Result: Parcel(00000000 00000001 '........')")
-        return done("ok")
+NUMBER = "+12515551234"
+OWN = "+12515550100"
+BODY = "Approve the 40 ft charter Saturday 7am, $850? Reply YES"
 
 
-def _rows(rows):
-    return "\n".join(
-        f"Row: {i} " + ", ".join(f"{k}={v}" for k, v in row.items())
-        for i, row in enumerate(rows))
+@pytest.fixture
+def phone() -> FakePhone:
+    return FakePhone()
 
 
-def channel(adb, **kwargs):
-    return AndroidSimChannel(serial=SERIAL, own_number=AGENT, send_mode="service_call",
-                             runner=adb, poll_seconds=3600, **kwargs)
+@pytest.fixture
+def app_map():
+    return load_app_map(builtin_map_path(DEFAULT_APP_MAP), calibrating=True)
 
 
-# --- parsing -----------------------------------------------------------
-
-def test_provider_rows_parse_including_commas_in_a_body():
-    output = _rows([{"_id": "7", "address": OWNER, "body": "YES, do it, please"}])
-    rows = parse_sms_rows(output)
-    assert len(rows) == 1
-    assert rows[0]["_id"] == "7"
-    assert rows[0]["body"] == "YES, do it, please"
-
-
-def test_non_row_output_is_ignored():
-    assert parse_sms_rows("No result found.\nrandom noise") == []
-
-
-# --- device binding ----------------------------------------------------
-
-def test_it_refuses_a_phone_that_is_not_the_paired_one():
-    """A swapped cable must not silently change which SIM speaks for the owner."""
-    adb = FakeAdb(attached=("some-other-phone",))
-    sim = channel(adb)
-    sim.connect()
-    assert sim.status() is ChannelStatus.ERROR
+@pytest.fixture
+def channel(phone, app_map):
+    device = PhoneDevice(phone.serial, phone, settle=0.0)
+    procedure = MessagesProcedure(device, app_map, step_pause=0.0, observe_pause=0.0)
+    made = AndroidSimChannel(
+        serial=phone.serial,
+        own_number=OWN,
+        app_map=app_map,
+        device=device,
+        procedure=procedure,
+        poll_seconds=3600,
+    )
+    yield made
+    made.disconnect()
 
 
-def test_it_refuses_when_no_serial_is_configured():
-    sim = AndroidSimChannel(serial="", own_number=AGENT, runner=FakeAdb())
-    sim.connect()
-    assert sim.status() is ChannelStatus.ERROR
+# --- registration --------------------------------------------------------
 
 
-def test_it_refuses_a_number_that_is_not_e164():
-    for number in ("5550000002", "not-a-number", ""):
-        sim = AndroidSimChannel(serial=SERIAL, own_number=number, runner=FakeAdb())
-        sim.connect()
-        assert sim.status() is ChannelStatus.ERROR, number
+def test_the_channel_registers_under_its_own_id():
+    # Registries are cleared between tests, so re-register the way the
+    # decorator does at import time and check the key it claims.
+    if not ChannelRegistry.contains("android_sim"):
+        ChannelRegistry.register_value("android_sim", AndroidSimChannel)
+    assert ChannelRegistry.get("android_sim") is AndroidSimChannel
+    assert AndroidSimChannel.channel_id == "android_sim"
 
 
-def test_it_refuses_without_a_ready_sim():
-    sim = channel(FakeAdb(sim="ABSENT"))
-    sim.connect()
-    assert sim.status() is ChannelStatus.ERROR
+# --- binding to one device ----------------------------------------------
 
 
-def test_it_refuses_when_adb_is_missing():
-    sim = channel(FakeAdb(fail=("adb",)))
-    sim.connect()
-    assert sim.status() is ChannelStatus.ERROR
+def test_it_connects_to_the_configured_phone(channel):
+    channel.connect()
+    assert channel.status() is ChannelStatus.CONNECTED
+    assert channel.list_channels() == [OWN]
 
 
-def test_a_paired_ready_device_connects():
-    sim = channel(FakeAdb())
-    sim.connect()
-    assert sim.status() is ChannelStatus.CONNECTED
-    assert sim.list_channels() == [AGENT]
-    sim.disconnect()
-    assert sim.status() is ChannelStatus.DISCONNECTED
+def test_it_refuses_a_different_phone_even_if_it_is_the_only_one_attached(
+    phone, app_map
+):
+    device = PhoneDevice("EXPECTED_SERIAL", phone, settle=0.0)
+    made = AndroidSimChannel(
+        serial="EXPECTED_SERIAL",
+        own_number=OWN,
+        app_map=app_map,
+        device=device,
+        poll_seconds=3600,
+    )
+    made.connect()
+    assert made.status() is ChannelStatus.ERROR
 
 
-# --- sending -----------------------------------------------------------
-
-def test_delivery_is_claimed_only_after_the_sent_box_shows_it():
-    adb = FakeAdb(sent=[{"_id": "9", "address": OWNER, "body": "Approve $650 charter?"}])
-    sim = channel(adb)
-    sim.connect()
-    assert sim.send(OWNER, "Approve $650 charter?") is True
+def test_it_refuses_without_a_serial(app_map, monkeypatch):
+    monkeypatch.delenv("NG_ANDROID_SERIAL", raising=False)
+    made = AndroidSimChannel(own_number=OWN, app_map=app_map)
+    made.connect()
+    assert made.status() is ChannelStatus.ERROR
 
 
-def test_a_command_that_returned_zero_is_not_delivery():
-    """The sent box is empty, so the outcome is uncertain, not success."""
-    adb = FakeAdb(sent=[])
-    sim = channel(adb)
-    sim.connect()
-    assert sim.send(OWNER, "Approve $650 charter?") is False
+@pytest.mark.parametrize("number", ["", "2515550100", "+1 251 555 0100", "abc"])
+def test_it_refuses_a_number_that_is_not_e164(phone, app_map, number):
+    device = PhoneDevice(phone.serial, phone, settle=0.0)
+    made = AndroidSimChannel(
+        serial=phone.serial, own_number=number, app_map=app_map, device=device
+    )
+    made.connect()
+    assert made.status() is ChannelStatus.ERROR
 
 
-def test_a_failed_send_command_is_a_failure():
-    sim = channel(FakeAdb(fail=("send",)))
-    sim.connect()
-    assert sim.send(OWNER, "anything") is False
+def test_it_refuses_a_phone_with_no_ready_sim(phone, app_map):
+    phone.sim = "ABSENT"
+    device = PhoneDevice(phone.serial, phone, settle=0.0)
+    made = AndroidSimChannel(
+        serial=phone.serial, own_number=OWN, app_map=app_map, device=device
+    )
+    made.connect()
+    assert made.status() is ChannelStatus.ERROR
 
 
-def test_it_refuses_a_non_e164_recipient():
-    sim = channel(FakeAdb())
-    sim.connect()
-    assert sim.send("5550000001", "hello") is False
-    assert sim.send("", "hello") is False
+def test_it_refuses_when_adb_is_not_installed(phone, app_map):
+    phone.adb_present = False
+    device = PhoneDevice(phone.serial, phone, settle=0.0)
+    made = AndroidSimChannel(
+        serial=phone.serial, own_number=OWN, app_map=app_map, device=device
+    )
+    made.connect()
+    assert made.status() is ChannelStatus.ERROR
 
 
-def test_it_refuses_an_empty_message():
-    sim = channel(FakeAdb())
-    sim.connect()
-    assert sim.send(OWNER, "   ") is False
+# --- the App Map gate ----------------------------------------------------
 
 
-def test_it_will_not_send_before_connecting():
-    sim = channel(FakeAdb())
-    assert sim.send(OWNER, "hello") is False
+def test_an_unvalidated_app_map_stops_the_channel_connecting(phone, monkeypatch):
+    monkeypatch.delenv("NG_APPMAP_CALIBRATING", raising=False)
+    device = PhoneDevice(phone.serial, phone, settle=0.0)
+    made = AndroidSimChannel(
+        serial=phone.serial, own_number=OWN, device=device, calibrating=False
+    )
+    made.connect()
+    assert made.status() is ChannelStatus.ERROR
+    report = made.health()
+    assert report["app_map_validated"] is False
+    # The reason is reported, not swallowed: an operator needs to know the
+    # map has not been confirmed against this phone.
+    assert "validated" in report["app_map_error"]
 
 
-# --- receiving ---------------------------------------------------------
+def test_the_shipped_map_loads_only_while_calibrating():
+    with pytest.raises(UnvalidatedAppMap):
+        resolve_app_map(DEFAULT_APP_MAP)
+    assert resolve_app_map(DEFAULT_APP_MAP, calibrating=True).id == DEFAULT_APP_MAP
 
-def test_inbound_messages_carry_their_device_evidence():
-    adb = FakeAdb(inbox=[{"_id": "11", "address": OWNER, "body": "YES 4ccad013", "date": "1774000000000"}])
-    sim = channel(adb)
-    sim._high_water = 10
-    sim._status = ChannelStatus.CONNECTED
-    received = sim.poll_once()
+
+def test_a_map_can_be_given_by_path(tmp_path):
+    from openjarvis.phone.appmap import REQUIRED_ELEMENTS
+
+    body = "\n".join(
+        [
+            "[app_map]",
+            'id = "demo"',
+            'package = "com.example.messages"',
+            'launch_activity = "com.example.messages.Main"',
+            "validated = true",
+            'validated_on = "com.example.messages 1.0 on a bench device"',
+            "[app_map.elements]",
+            *[f'{name} = {{ resource_id = "{name}" }}' for name in REQUIRED_ELEMENTS],
+        ]
+    )
+    path = tmp_path / "demo.toml"
+    path.write_text(body, encoding="utf-8")
+    assert resolve_app_map(str(path)).package == "com.example.messages"
+
+
+# --- sending -------------------------------------------------------------
+
+
+def test_a_send_goes_through_the_screen_and_only_screen_verbs_are_issued(
+    channel, phone
+):
+    channel.connect()
+    assert channel.send(NUMBER, BODY) is True
+    assert phone.threads[NUMBER].bubbles[-1].body == BODY
+    assert phone.refused == []
+    assert all(is_screen_verb(command) for command in phone.commands)
+
+
+def test_it_will_not_send_before_it_is_connected(channel, phone):
+    assert channel.send(NUMBER, BODY) is False
+    assert phone.commands == []
+
+
+def test_a_failure_marker_on_screen_is_reported_as_a_failure(channel, phone):
+    channel.connect()
+    phone.send_fails = True
+    assert channel.send(NUMBER, BODY) is False
+
+
+def test_an_uncertain_outcome_is_not_reported_as_success(channel, phone, monkeypatch):
+    channel.connect()
+    monkeypatch.setattr(phone, "_send", lambda: None)
+    assert channel.send(NUMBER, BODY) is False
+
+
+def test_the_bus_is_told_what_the_screen_showed(channel, phone):
+    published = []
+
+    class Recorder:
+        def publish(self, event_type, payload):
+            published.append((event_type, payload))
+
+    channel._bus = Recorder()
+    channel.connect()
+    channel.send(NUMBER, BODY)
+    assert published
+    _, payload = published[-1]
+    assert payload["delivery"] == "sent"
+    assert payload["transport"] == "screen"
+    assert payload["evidence"]
+
+
+def test_an_uncertain_send_says_uncertain_on_the_bus(channel, phone, monkeypatch):
+    published = []
+
+    class Recorder:
+        def publish(self, event_type, payload):
+            published.append(payload)
+
+    channel._bus = Recorder()
+    channel.connect()
+    monkeypatch.setattr(phone, "_send", lambda: None)
+    channel.send(NUMBER, BODY)
+    assert published[-1]["delivery"] == "uncertain"
+
+
+# --- receiving -----------------------------------------------------------
+
+
+def test_connecting_baselines_the_inbox_so_history_is_not_replayed(channel, phone):
+    phone.receive(NUMBER, "a message from before the box came up")
+    channel.connect()
+    assert channel.poll_once() == []
+
+
+def test_a_reply_is_delivered_once_with_its_provenance(channel, phone):
+    channel.connect()
+    channel.send(NUMBER, BODY)
+    phone.receive(NUMBER, "YES")
+
+    received = channel.poll_once()
     assert len(received) == 1
-    assert received[0].content == "YES 4ccad013"
-    assert received[0].sender == OWNER
-    assert received[0].metadata["transport"] == "real_sim"
-    assert received[0].metadata["evidence"] == "content://sms/inbox/11"
-    assert received[0].message_id == f"{SERIAL}:11"
+    message = received[0]
+    assert message.content == "YES"
+    assert message.sender == NUMBER
+    assert message.channel == "android_sim"
+    assert message.metadata["transport"] == "screen"
+    assert message.metadata["received_on"] == OWN
+    assert "screen" in message.metadata["evidence"]
+    assert message.message_id.startswith(phone.serial + ":")
+
+    assert channel.poll_once() == []
 
 
-def test_an_overlapping_poll_cannot_replay_an_approval():
-    """The provider row id is the dedupe key, so a YES is delivered once."""
-    adb = FakeAdb(inbox=[{"_id": "11", "address": OWNER, "body": "YES 4ccad013"}])
-    sim = channel(adb)
-    sim._high_water = 10
-    sim._status = ChannelStatus.CONNECTED
-    assert len(sim.poll_once()) == 1
-    assert sim.poll_once() == []
+def test_the_message_id_is_stable_for_the_same_bubble(channel, phone):
+    channel.connect()
+    phone.receive(NUMBER, "YES")
+    first = channel.poll_once()[0]
+    assert first.message_id == f"{phone.serial}:{first.metadata['fingerprint']}"
 
 
-def test_the_high_water_mark_advances():
-    adb = FakeAdb(inbox=[{"_id": "11", "address": OWNER, "body": "one"},
-                         {"_id": "12", "address": OWNER, "body": "two"}])
-    sim = channel(adb)
-    sim._high_water = 10
-    sim._status = ChannelStatus.CONNECTED
-    sim.poll_once()
-    assert sim._high_water == 12
-
-
-def test_an_unreadable_inbox_yields_nothing_rather_than_guessing():
-    sim = channel(FakeAdb(fail=("inbox",)))
-    sim._status = ChannelStatus.CONNECTED
-    assert sim.poll_once() == []
-
-
-def test_handlers_receive_inbound_messages():
-    adb = FakeAdb(inbox=[{"_id": "11", "address": OWNER, "body": "YES"}])
-    sim = channel(adb)
-    sim._high_water = 10
-    sim._status = ChannelStatus.CONNECTED
+def test_handlers_see_inbound_messages(channel, phone):
     seen = []
-    sim.on_message(seen.append)
-    for message in sim.poll_once():
-        sim._dispatch(message)
-    assert [m.content for m in seen] == ["YES"]
+    channel.on_message(seen.append)
+    channel.connect()
+    phone.receive(NUMBER, "YES")
+    for message in channel.poll_once():
+        channel._dispatch(message)
+    assert [message.content for message in seen] == ["YES"]
 
 
-def test_one_raising_handler_does_not_stop_the_others():
-    adb = FakeAdb(inbox=[{"_id": "11", "address": OWNER, "body": "YES"}])
-    sim = channel(adb)
-    sim._high_water = 10
-    sim._status = ChannelStatus.CONNECTED
+def test_a_raising_handler_does_not_stop_the_others(channel, phone):
     seen = []
 
-    def broken(_message):
-        raise RuntimeError("test-only")
+    def explode(message):
+        raise RuntimeError("handler bug")
 
-    sim.on_message(broken)
-    sim.on_message(seen.append)
-    for message in sim.poll_once():
-        sim._dispatch(message)
+    channel.on_message(explode)
+    channel.on_message(seen.append)
+    channel.connect()
+    phone.receive(NUMBER, "YES")
+    for message in channel.poll_once():
+        channel._dispatch(message)
     assert len(seen) == 1
 
 
-# --- health ------------------------------------------------------------
-
-def test_health_reports_what_is_actually_true():
-    sim = channel(FakeAdb())
-    sim.connect()
-    health = sim.health()
-    assert health["serial"] == SERIAL
-    assert health["number"] == AGENT
-    assert health["attached"] is True
-    assert health["sim_ready"] is True
-    assert health["status"] == "connected"
+def test_polling_before_connecting_yields_nothing(channel):
+    assert channel.poll_once() == []
 
 
-def test_health_reports_a_detached_phone():
-    adb = FakeAdb()
-    sim = channel(adb)
-    sim.connect()
-    adb.attached = []
-    adb.sim = "ABSENT"
-    health = sim.health()
-    assert health["attached"] is False
-    assert health["sim_ready"] is False
+# --- health --------------------------------------------------------------
 
 
-# --- registration ------------------------------------------------------
+def test_health_answers_before_the_channel_connects(phone):
+    # The owner's device page asks this first, and the answer it needs is
+    # whether the map has been confirmed against a phone.
+    probe = AndroidSimChannel(serial=phone.serial, own_number=OWN)
+    report = probe.health()
+    assert report["app_map"] == DEFAULT_APP_MAP
+    assert report["app_map_validated"] is False
+    assert report["app_map_confirmed_against"] == ""
+    assert report["attached"] is False
+    assert report["transport"] == "screen"
 
-def test_the_channel_is_discoverable_in_the_registry():
-    from openjarvis.core.registry import ChannelRegistry
-    import openjarvis.channels  # noqa: F401  triggers registration
 
-    names = ChannelRegistry.list() if hasattr(ChannelRegistry, "list") else None
-    if names is None:
-        pytest.skip("registry does not expose a listing in this version")
-    assert "android_sim" in names
+def test_health_reports_what_it_knows_and_says_screen(channel, phone):
+    channel.connect()
+    report = channel.health()
+    assert report["serial"] == phone.serial
+    assert report["number"] == OWN
+    assert report["attached"] is True
+    assert report["sim_ready"] is True
+    assert report["transport"] == "screen"
+    assert report["app_map"] == DEFAULT_APP_MAP
+    assert report["status"] == ChannelStatus.CONNECTED.value
+
+
+def test_health_reports_a_detached_phone_rather_than_guessing(channel, phone):
+    channel.connect()
+    phone.attached = False
+    report = channel.health()
+    assert report["attached"] is False
+    assert report["sim_ready"] is False
+
+
+def test_disconnect_stops_the_watcher(channel):
+    channel.connect()
+    channel.disconnect()
+    assert channel.status() is ChannelStatus.DISCONNECTED
+
+
+# --- no provider, no send api, no message database -----------------------
 
 
 def test_no_cloud_provider_appears_in_this_adapter():
-    """The whole point: nobody else is in the path."""
     import pathlib
 
     import openjarvis.channels.android_sim as module
 
-    source = pathlib.Path(module.__file__).read_text().lower()
-    for vendor in ("twilio", "sendblue", "messagebird", "vonage", "plivo", "bandwidth"):
-        # A comment naming what this replaces is fine; an import or a call is not.
+    source = pathlib.Path(module.__file__).read_text(encoding="utf-8").lower()
+    for vendor in (
+        "twilio",
+        "sendblue",
+        "messagebird",
+        "vonage",
+        "plivo",
+        "bandwidth",
+        "telnyx",
+        "sinch",
+    ):
         assert f"import {vendor}" not in source
         assert f"{vendor}.com" not in source
+
+
+def test_the_adapter_makes_no_network_call_of_its_own():
+    import ast
+    import pathlib
+
+    import openjarvis.channels.android_sim as module
+
+    tree = ast.parse(pathlib.Path(module.__file__).read_text(encoding="utf-8"))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+    # No HTTP client and no socket: the only thing this channel talks to is
+    # the phone in front of it, through the screen driver.
+    assert not imported & {
+        "urllib",
+        "http",
+        "requests",
+        "httpx",
+        "socket",
+        "websockets",
+    }
+
+
+def test_the_adapter_issues_no_shell_command_itself():
+    import ast
+    import pathlib
+
+    import openjarvis.channels.android_sim as module
+
+    source = pathlib.Path(module.__file__).read_text(encoding="utf-8")
+    called = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call):
+            target = node.func
+            name = getattr(target, "attr", None) or getattr(target, "id", None)
+            if name:
+                called.add(name)
+    assert "run" not in called
+    assert "Popen" not in called
+    # It asks the driver to do things; it never builds a device command.
+    assert "shell" not in called

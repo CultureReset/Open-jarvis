@@ -1,57 +1,61 @@
-"""Real-SIM SMS channel: send and receive through a paired physical Android.
+"""Real-SIM SMS channel: the agent works the phone's screen.
 
 Every other SMS channel here routes through somebody else's server — Twilio,
-SendBlue, WhatsApp, Signal. This one routes through a phone the owner holds,
-using its own SIM and its own number. No provider account, no webhook, no
-third party in the path.
+SendBlue, WhatsApp, Signal. This one routes through a phone that is part of
+the box, using its own SIM and its own number. No provider account, no
+webhook, no third party in the path.
 
-Why that matters beyond privacy: the phone becomes a destination. A Walmart
-checkout that offers to text a receipt, a restaurant POS, an airline, a
-hotel — they all send to a real number, and a real number is the one thing a
-cloud SMS API cannot give you cheaply for inbound business mail.
+It also uses no send API and no message database. The agent opens Messages,
+taps the controls, types the words and taps send, then looks at the screen to
+see whether the message is there. Replies are read off the thread. The
+mechanics live in :mod:`openjarvis.phone`, where :class:`ScreenOnlyShell`
+refuses any command that is not a screen verb, so ``service call isms`` and
+``content://sms`` cannot be issued from here even by accident.
 
-Three rules this adapter keeps, because SMS is used here to authorize real
-actions:
+This channel is the thin part: it binds to one device, wires the procedure to
+OpenJarvis's channel contract, and keeps three rules, because SMS is used
+here to authorize real actions.
 
 **It is bound to one device.** The serial is configured, and connect() refuses
 a different phone even if it is the only one plugged in. Otherwise a swapped
 cable silently changes which SIM speaks for the owner.
 
-**It never claims delivery.** ``send`` returns True only after the message is
-observed in the device's own sent box. A shell command that returned zero is
-not evidence a carrier accepted anything, and the difference matters when the
-message is an approval request.
+**It never claims delivery.** ``send`` returns True only when the words were
+seen in an outgoing bubble in the thread. A tap that landed is not evidence
+that a message exists, and the difference matters when the message is an
+approval request.
 
-**It never invents an inbound message.** Receive reads the device's SMS
-provider and dedupes on the provider's own row id, so a poll that overlaps a
-previous one cannot replay an approval reply.
+**It never invents an inbound message.** Inbound comes from reading the
+thread and aligning against the previous read, so an overlapping poll cannot
+replay an approval reply. Where the alignment cannot be established, nothing
+is emitted.
 
-Sending needs a path onto the SIM. Two are supported:
+Configuration:
 
-``companion``
-    The NEXT GENT companion app holds the SMS role and exposes a loopback
-    endpoint over the adb tunnel. This is the production path: the SMS role is
-    a documented Android capability, survives reboots, and needs no debugging
-    surface left open.
-
-``service_call``
-    ``adb shell service call isms`` — the development path. The transaction
-    code for ``sendTextForSubscriber`` is not stable across Android versions,
-    so it is configurable and defaults to the Android 14/15 value. Verify it on
-    the target build before trusting it; a wrong code fails loudly rather than
-    sending to the wrong recipient.
+``NG_ANDROID_SERIAL``
+    The adb serial of the phone that belongs to this box. Required.
+``NG_AGENT_NUMBER``
+    That phone's own number, E.164. Required, and checked, so the channel can
+    say which number spoke.
+``NG_MESSAGES_APP_MAP``
+    An App Map id shipped in ``openjarvis/phone/data`` or a path to a TOML
+    file. Defaults to ``google_messages``.
+``NG_APPMAP_CALIBRATING``
+    Set to 1 only while calibrating an App Map against a real device. An
+    unvalidated map is otherwise refused: unconfirmed selectors on a live
+    phone are how a message reaches the wrong conversation.
+``NG_SMS_POLL_SECONDS``
+    How often to glance at the conversation list. Default 20s — reading the
+    screen takes the screen, so this is deliberately not a busy loop.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import re
-import shutil
-import subprocess
 import threading
-import time
-from typing import Any, Callable, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from openjarvis.channels._stubs import (
     BaseChannel,
@@ -61,71 +65,38 @@ from openjarvis.channels._stubs import (
 )
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.registry import ChannelRegistry
+from openjarvis.phone.appmap import (
+    AppMap,
+    AppMapError,
+    builtin_map_path,
+    load_app_map,
+)
+from openjarvis.phone.device import PhoneDevice, ScreenOnlyShell
+from openjarvis.phone.messages import (
+    E164,
+    SENT,
+    UNCERTAIN,
+    InboxWatcher,
+    MessagesProcedure,
+    ScreenMessage,
+)
 
 logger = logging.getLogger(__name__)
 
-# service call isms transaction for sendTextForSubscriber. Android 14/15.
-DEFAULT_ISMS_TRANSACTION = 5
-POLL_SECONDS = 5
-E164 = re.compile(r"^\+[1-9]\d{6,14}$")
+POLL_SECONDS = 20
+DEFAULT_APP_MAP = "google_messages"
 
 
-def _run(argv: List[str], timeout: int = 20) -> subprocess.CompletedProcess:
-    """Run a command. Never raises; the caller inspects returncode."""
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
-
-
-class AdbRunner:
-    """Thin shell around adb, bound to one device serial.
-
-    Injectable so the channel is testable without a phone attached.
-    """
-
-    def __init__(self, serial: str, adb: str = "adb") -> None:
-        self.serial = serial
-        self.adb = adb
-
-    def available(self) -> bool:
-        return shutil.which(self.adb) is not None
-
-    def devices(self) -> List[str]:
-        result = _run([self.adb, "devices"])
-        if result.returncode != 0:
-            return []
-        found = []
-        for line in result.stdout.splitlines()[1:]:
-            parts = line.split()
-            if len(parts) >= 2 and parts[1] == "device":
-                found.append(parts[0])
-        return found
-
-    def shell(self, command: str, timeout: int = 20) -> subprocess.CompletedProcess:
-        return _run([self.adb, "-s", self.serial, "shell", command], timeout=timeout)
-
-
-def parse_sms_rows(output: str) -> List[Dict[str, str]]:
-    """Parse `content query --uri content://sms/...` output.
-
-    The provider prints one row per line as `Row: N key=value, key=value`.
-    A value containing a comma would break naive splitting, so the body is
-    taken as everything after `body=` up to the next `, <key>=` boundary.
-    """
-    rows = []
-    for line in output.splitlines():
-        line = line.strip()
-        if not line.startswith("Row:"):
-            continue
-        fields: Dict[str, str] = {}
-        for match in re.finditer(r"(\w+)=(.*?)(?=, \w+=|$)", line.split(" ", 2)[-1]):
-            fields[match.group(1)] = match.group(2).strip()
-        if fields.get("_id"):
-            rows.append(fields)
-    return rows
+def resolve_app_map(reference: str, *, calibrating: bool = False) -> AppMap:
+    """Load an App Map by shipped id or by path."""
+    candidate = Path(reference)
+    path = candidate if candidate.suffix == ".toml" else builtin_map_path(reference)
+    return load_app_map(path, calibrating=calibrating)
 
 
 @ChannelRegistry.register("android_sim")
 class AndroidSimChannel(BaseChannel):
-    """SMS over a paired physical Android's own SIM."""
+    """SMS over the box's own phone, driven through its screen."""
 
     channel_id = "android_sim"
 
@@ -134,74 +105,100 @@ class AndroidSimChannel(BaseChannel):
         *,
         serial: str = "",
         own_number: str = "",
-        send_mode: str = "",
-        companion_port: int = 0,
-        isms_transaction: int = 0,
-        runner: Optional[AdbRunner] = None,
+        app_map: str | AppMap = "",
+        calibrating: Optional[bool] = None,
+        device: Optional[PhoneDevice] = None,
+        procedure: Optional[MessagesProcedure] = None,
         poll_seconds: int = POLL_SECONDS,
         bus: Optional[EventBus] = None,
     ) -> None:
         self._serial = serial or os.environ.get("NG_ANDROID_SERIAL", "")
         self._own_number = own_number or os.environ.get("NG_AGENT_NUMBER", "")
-        self._send_mode = send_mode or os.environ.get("NG_SMS_SEND_MODE", "companion")
-        self._companion_port = companion_port or int(os.environ.get("NG_COMPANION_PORT", "8767"))
-        self._isms_transaction = isms_transaction or int(
-            os.environ.get("NG_ISMS_TRANSACTION", DEFAULT_ISMS_TRANSACTION))
-        self._runner = runner or AdbRunner(self._serial)
-        self._poll_seconds = poll_seconds
-        self._bus = bus
+        self._app_map_ref = app_map or os.environ.get(
+            "NG_MESSAGES_APP_MAP", DEFAULT_APP_MAP
+        )
+        self._calibrating = (
+            calibrating
+            if calibrating is not None
+            else os.environ.get("NG_APPMAP_CALIBRATING", "") in ("1", "true", "yes")
+        )
+        self._poll_seconds = poll_seconds or int(
+            os.environ.get("NG_SMS_POLL_SECONDS", POLL_SECONDS)
+        )
 
+        self._device = device
+        self._procedure = procedure
+        self._watcher: Optional[InboxWatcher] = None
+        self._map: Optional[AppMap] = app_map if isinstance(app_map, AppMap) else None
+        self._map_error = ""
+
+        self._bus = bus
         self._handlers: List[ChannelHandler] = []
         self._status = ChannelStatus.DISCONNECTED
-        self._seen: set[str] = set()
-        self._high_water = 0
         self._poller: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
     # --- lifecycle ------------------------------------------------------
 
     def connect(self) -> None:
-        """Attach to the configured device, or refuse.
+        """Attach to the configured device and App Map, or refuse.
 
         Refusing is the point. A channel that authorizes spending must not
-        follow whichever phone happens to be plugged in.
+        follow whichever phone happens to be plugged in, and must not drive a
+        screen with selectors nobody has confirmed.
         """
         self._status = ChannelStatus.CONNECTING
         if not self._serial:
-            logger.error("No device serial configured; set NG_ANDROID_SERIAL")
-            self._status = ChannelStatus.ERROR
-            return
+            return self._fail("No device serial configured; set NG_ANDROID_SERIAL")
         if not self._own_number or not E164.match(self._own_number):
-            logger.error("Agent number must be configured in E.164 form")
-            self._status = ChannelStatus.ERROR
-            return
-        if not self._runner.available():
-            logger.error("adb not found on PATH")
-            self._status = ChannelStatus.ERROR
-            return
+            return self._fail("The phone's own number must be configured in E.164 form")
 
-        attached = self._runner.devices()
+        if self._map is None:
+            try:
+                self._map = resolve_app_map(
+                    str(self._app_map_ref), calibrating=self._calibrating
+                )
+            except AppMapError as exc:
+                self._map_error = str(exc)
+                return self._fail(str(exc))
+
+        if self._device is None:
+            self._device = PhoneDevice(self._serial, ScreenOnlyShell(self._serial))
+        if not self._device.shell.available():
+            return self._fail("adb not found on PATH")
+
+        attached = self._device.shell.devices()
         if self._serial not in attached:
-            logger.error(
-                "Paired device %s is not attached (attached: %s). Refusing to use another phone.",
-                self._serial, ", ".join(attached) or "none")
-            self._status = ChannelStatus.ERROR
-            return
+            return self._fail(
+                f"The box's phone {self._serial} is not attached (attached: "
+                f"{', '.join(attached) or 'none'}). Refusing to use another phone."
+            )
+        if not self._device.sim_ready():
+            return self._fail(f"The phone {self._serial} has no ready SIM")
 
-        if not self.sim_ready():
-            logger.error("Device %s has no ready SIM", self._serial)
-            self._status = ChannelStatus.ERROR
-            return
+        if self._procedure is None:
+            self._procedure = MessagesProcedure(self._device, self._map)
+        self._watcher = InboxWatcher(self._procedure)
+        self._watcher.baseline()
 
-        self._high_water = self._latest_inbox_id()
         self._status = ChannelStatus.CONNECTED
         self._start_polling()
-        logger.info("Real-SIM channel attached to %s as %s", self._serial, self._own_number)
+        logger.info(
+            "Real-SIM channel attached to %s as %s, driving %s through App Map %s",
+            self._serial,
+            self._own_number,
+            self._map.package,
+            self._map.id,
+        )
+
+    def _fail(self, reason: str) -> None:
+        logger.error("%s", reason)
+        self._status = ChannelStatus.ERROR
 
     def disconnect(self) -> None:
         self._stop.set()
         if self._poller and self._poller.is_alive():
-            self._poller.join(timeout=self._poll_seconds + 2)
+            self._poller.join(timeout=self._poll_seconds + 5)
         self._poller = None
         self._status = ChannelStatus.DISCONNECTED
 
@@ -216,20 +213,42 @@ class AndroidSimChannel(BaseChannel):
 
     # --- device state ---------------------------------------------------
 
-    def sim_ready(self) -> bool:
-        result = self._runner.shell("getprop gsm.sim.state")
-        return result.returncode == 0 and "READY" in result.stdout.upper()
-
     def health(self) -> Dict[str, Any]:
         """What the owner's device page needs. Absence is reported, not guessed."""
-        return {
+        app_map = self._map or self._describe_map()
+        report: Dict[str, Any] = {
             "serial": self._serial,
             "number": self._own_number,
-            "attached": self._serial in self._runner.devices(),
-            "sim_ready": self.sim_ready(),
-            "send_mode": self._send_mode,
             "status": self._status.value,
+            "transport": "screen",
+            "app_map": app_map.id if app_map else str(self._app_map_ref),
+            "app_map_validated": bool(app_map and app_map.validated),
+            "app_map_confirmed_against": app_map.validated_on if app_map else "",
+            "attached": False,
+            "sim_ready": False,
         }
+        if self._map_error:
+            report["app_map_error"] = self._map_error
+        if self._device is not None:
+            report["attached"] = self._device.attached()
+            report["sim_ready"] = (
+                self._device.sim_ready() if report["attached"] else False
+            )
+        return report
+
+    def _describe_map(self) -> Optional[AppMap]:
+        """Read the configured map for reporting only.
+
+        The health endpoint is asked before the channel connects, and the
+        answer the owner needs is whether the map has been confirmed against
+        a phone. Loading it here is for reporting; the gate that decides
+        whether it may drive the screen stays in connect().
+        """
+        try:
+            return resolve_app_map(str(self._app_map_ref), calibrating=True)
+        except AppMapError as exc:
+            self._map_error = self._map_error or str(exc)
+            return None
 
     # --- sending --------------------------------------------------------
 
@@ -241,140 +260,84 @@ class AndroidSimChannel(BaseChannel):
         conversation_id: str = "",
         metadata: Dict[str, Any] | None = None,
     ) -> bool:
-        """Send through the SIM. True only once the device's sent box shows it."""
-        if self._status is not ChannelStatus.CONNECTED:
+        """Text through the phone's screen. True only on screen evidence."""
+        if self._status is not ChannelStatus.CONNECTED or self._procedure is None:
             logger.error("Real-SIM channel is not connected")
             return False
-        if not E164.match(channel or ""):
-            logger.error("Recipient must be an E.164 number, got %r", channel)
-            return False
-        if not content.strip():
-            logger.error("Refusing to send an empty message")
-            return False
 
-        sender = self._companion_send if self._send_mode == "companion" else self._service_call_send
-        accepted = sender(channel, content)
-        if not accepted:
-            return False
-
-        if self._observe_sent(channel, content):
-            self._publish_sent(channel, content, conversation_id)
-            return True
-
-        # The command returned without error but nothing is in the sent box.
-        # That is an uncertain outcome, not a success and not a clean failure;
-        # say so rather than letting a caller assume the owner was reached.
-        logger.warning(
-            "Message to %s was accepted by the device but is not visible in its sent box; "
-            "treat delivery as uncertain and reconcile before resending", channel)
+        outcome = self._procedure.send(channel, content)
         if self._bus:
-            self._bus.publish(EventType.CHANNEL_MESSAGE_SENT,
-                              {"channel": self.channel_id, "to": channel,
-                               "delivery": "uncertain", "conversation_id": conversation_id})
-        return False
-
-    def _companion_send(self, to: str, content: str) -> bool:
-        """Hand the message to the companion app, which holds the SMS role."""
-        import json
-        import urllib.error
-        import urllib.request
-
-        forward = self._runner.shell("echo ok")
-        if forward.returncode != 0:
-            logger.error("Device is unreachable over adb")
-            return False
-        payload = json.dumps({"to": to, "body": content}).encode()
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{self._companion_port}/sms/send",
-            data=payload, headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(request, timeout=15) as response:
-                return 200 <= response.status < 300
-        except (urllib.error.URLError, OSError) as exc:
+            self._bus.publish(
+                EventType.CHANNEL_MESSAGE_SENT,
+                {
+                    "channel": self.channel_id,
+                    "to": channel,
+                    "content": content,
+                    "delivery": outcome.status,
+                    "evidence": outcome.evidence,
+                    "conversation_id": conversation_id,
+                    "transport": "screen",
+                },
+            )
+        if outcome.status == SENT:
+            return True
+        if outcome.status == UNCERTAIN:
+            logger.warning(
+                "Message to %s is uncertain: %s. Reconcile before resending.",
+                channel,
+                "; ".join(outcome.evidence[-2:]),
+            )
+        else:
             logger.error(
-                "Companion app is not reachable on port %s (%s). Install the companion app or "
-                "set NG_SMS_SEND_MODE=service_call for development.", self._companion_port, exc)
-            return False
-
-    def _service_call_send(self, to: str, content: str) -> bool:
-        """Development path. The transaction code is version-specific."""
-        packed = " ".join(f"s16 {part!r}" for part in ("", to, ""))
-        command = (
-            f"service call isms {self._isms_transaction}"
-            f" i32 1 {packed} s16 {content!r} s16 '' s16 ''"
-        )
-        result = self._runner.shell(command, timeout=30)
-        if result.returncode != 0 or "Result: Parcel" not in result.stdout:
-            logger.error(
-                "service call isms %s failed. The transaction code differs across Android "
-                "builds; verify it on this device and set NG_ISMS_TRANSACTION. stderr: %s",
-                self._isms_transaction, result.stderr.strip()[:200])
-            return False
-        return True
-
-    def _observe_sent(self, to: str, content: str, attempts: int = 4) -> bool:
-        """Look in the device's own sent box. Evidence, not assumption."""
-        digits = re.sub(r"\D", "", to)[-10:]
-        for _ in range(attempts):
-            result = self._runner.shell(
-                "content query --uri content://sms/sent --projection _id:address:body "
-                "--sort '_id DESC LIMIT 5'")
-            if result.returncode == 0:
-                for row in parse_sms_rows(result.stdout):
-                    body = row.get("body", "")
-                    address = re.sub(r"\D", "", row.get("address", ""))
-                    if content[:40] in body and address.endswith(digits):
-                        return True
-            time.sleep(1)
+                "Message to %s was not sent: %s",
+                channel,
+                "; ".join(outcome.evidence[-2:]),
+            )
         return False
 
     # --- receiving ------------------------------------------------------
 
     def poll_once(self) -> List[ChannelMessage]:
-        """Read new inbound messages. Deduped on the provider's own row id."""
-        result = self._runner.shell(
-            "content query --uri content://sms/inbox "
-            f"--projection _id:address:body:date --where '_id > {self._high_water}' "
-            "--sort '_id ASC LIMIT 50'")
-        if result.returncode != 0:
-            logger.warning("Could not read the device inbox: %s", result.stderr.strip()[:200])
+        """Glance at the screen for new inbound messages."""
+        if self._watcher is None:
             return []
+        return [self._as_channel_message(seen) for seen in self._watcher.poll()]
 
-        received = []
-        for row in parse_sms_rows(result.stdout):
-            row_id = row["_id"]
-            if row_id in self._seen:
-                continue
-            self._seen.add(row_id)
-            try:
-                self._high_water = max(self._high_water, int(row_id))
-            except ValueError:
-                continue
-            message = ChannelMessage(
-                channel=self.channel_id,
-                sender=row.get("address", ""),
-                content=row.get("body", ""),
-                message_id=f"{self._serial}:{row_id}",
-                conversation_id=row.get("address", ""),
-                metadata={"received_on": self._own_number, "device_row": row_id,
-                          "device_date": row.get("date", ""), "transport": "real_sim",
-                          "evidence": f"content://sms/inbox/{row_id}"},
-            )
-            received.append(message)
-        return received
+    def _as_channel_message(self, seen: ScreenMessage) -> ChannelMessage:
+        return ChannelMessage(
+            channel=self.channel_id,
+            sender=seen.conversation,
+            content=seen.body,
+            message_id=f"{self._serial}:{seen.fingerprint}",
+            conversation_id=seen.conversation,
+            metadata={
+                "received_on": self._own_number,
+                "transport": "screen",
+                "evidence": "read from the thread on the phone's screen",
+                "screen_timestamp": seen.timestamp_text,
+                "fingerprint": seen.fingerprint,
+            },
+        )
 
     def _dispatch(self, message: ChannelMessage) -> None:
         for handler in self._handlers:
             try:
                 handler(message)
             except Exception:
-                logger.exception("A channel handler raised on message %s", message.message_id)
+                logger.exception(
+                    "A channel handler raised on message %s", message.message_id
+                )
         if self._bus:
-            self._bus.publish(EventType.CHANNEL_MESSAGE_RECEIVED, {
-                "channel": self.channel_id, "sender": message.sender,
-                "content": message.content, "message_id": message.message_id,
-                "transport": "real_sim",
-            })
+            self._bus.publish(
+                EventType.CHANNEL_MESSAGE_RECEIVED,
+                {
+                    "channel": self.channel_id,
+                    "sender": message.sender,
+                    "content": message.content,
+                    "message_id": message.message_id,
+                    "transport": "screen",
+                },
+            )
 
     def _start_polling(self) -> None:
         self._stop.clear()
@@ -385,29 +348,13 @@ class AndroidSimChannel(BaseChannel):
                     for message in self.poll_once():
                         self._dispatch(message)
                 except Exception:
-                    logger.exception("Inbox poll failed; continuing")
+                    logger.exception("Reading the phone's screen failed; continuing")
                 self._stop.wait(self._poll_seconds)
 
-        self._poller = threading.Thread(target=loop, name="android-sim-inbox", daemon=True)
+        self._poller = threading.Thread(
+            target=loop, name="android-sim-screen", daemon=True
+        )
         self._poller.start()
 
-    def _latest_inbox_id(self) -> int:
-        result = self._runner.shell(
-            "content query --uri content://sms/inbox --projection _id --sort '_id DESC LIMIT 1'")
-        if result.returncode != 0:
-            return 0
-        rows = parse_sms_rows(result.stdout)
-        try:
-            return int(rows[0]["_id"]) if rows else 0
-        except (ValueError, KeyError):
-            return 0
 
-    def _publish_sent(self, to: str, content: str, conversation_id: str) -> None:
-        if self._bus:
-            self._bus.publish(EventType.CHANNEL_MESSAGE_SENT, {
-                "channel": self.channel_id, "to": to, "content": content,
-                "delivery": "observed_in_sent_box", "conversation_id": conversation_id,
-            })
-
-
-__all__ = ["AndroidSimChannel", "AdbRunner", "parse_sms_rows"]
+__all__ = ["AndroidSimChannel", "resolve_app_map", "POLL_SECONDS", "DEFAULT_APP_MAP"]
