@@ -1176,12 +1176,14 @@ def include_all_routes(app) -> None:
                 global_r,
                 tools_r,
                 sendblue_r,
+                android_sim_r,
             ) = create_agent_manager_router(app.state.agent_manager)
             app.include_router(agents_r)
             app.include_router(templates_r)
             app.include_router(global_r)
             app.include_router(tools_r)
             app.include_router(sendblue_r)
+            app.include_router(android_sim_r)
     except ImportError:
         pass
 

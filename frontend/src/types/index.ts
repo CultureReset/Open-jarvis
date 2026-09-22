@@ -196,6 +196,6 @@ export interface ServerInfo {
 export interface LogEntry {
   timestamp: number;
   level: 'info' | 'warn' | 'error';
-  category: 'server' | 'model' | 'chat' | 'tool';
+  category: 'server' | 'model' | 'chat' | 'tool' | 'takeover';
   message: string;
 }

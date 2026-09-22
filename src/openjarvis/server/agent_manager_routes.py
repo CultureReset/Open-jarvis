@@ -1628,7 +1628,8 @@ def create_agent_manager_router(
     """Create FastAPI routers with agent management endpoints.
 
     Returns a 5-tuple:
-    ``(agents_router, templates_router, global_router, tools_router, sendblue_router)``.
+    ``(agents_router, templates_router, global_router, tools_router, sendblue_router,
+    android_sim_router)``.
     """
     agents_router = APIRouter(prefix="/v1/managed-agents", tags=["managed-agents"])
     templates_router = APIRouter(prefix="/v1/templates", tags=["templates"])
@@ -2576,10 +2577,40 @@ def create_agent_manager_router(
             "ready": sb is not None and has_bridge,
         }
 
+    # ── Real-SIM channel (the agent's own phone) ─────────────
+
+    android_sim_router = APIRouter(prefix="/v1/channels/android_sim", tags=["android_sim"])
+
+    @android_sim_router.get("/health")
+    async def android_sim_health(request: Request):
+        """Report the paired phone's actual state.
+
+        Read live from the device rather than from remembered state: a phone
+        that was attached a minute ago tells the owner nothing useful, and the
+        panel that shows this screen must not display a stale last frame as if
+        the device were still there.
+        """
+        channel = getattr(request.app.state, "android_sim_channel", None)
+        if channel is not None:
+            return channel.health()
+
+        # Not wired into a running bridge yet. Answer from configuration so the
+        # owner can see whether the device is reachable at all.
+        try:
+            from openjarvis.channels.android_sim import AndroidSimChannel
+        except ImportError:
+            raise HTTPException(status_code=503, detail="Real-SIM channel is unavailable")
+
+        probe = AndroidSimChannel()
+        health = probe.health()
+        health["bridge_wired"] = False
+        return health
+
     return (
         agents_router,
         templates_router,
         global_router,
         tools_router,
         sendblue_router,
+        android_sim_router,
     )

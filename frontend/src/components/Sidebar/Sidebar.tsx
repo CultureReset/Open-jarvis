@@ -1,23 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
-import {
-  MessageSquare,
-  Plus,
-  BarChart3,
-  Settings,
-  Search,
-  PanelLeftClose,
-  PanelLeft,
-  Cpu,
-  Rocket,
-  Bot,
-  Sun,
-  Moon,
-  Monitor,
-  Loader2,
-  ScrollText,
-  Database,
-} from 'lucide-react';
+import { BarChart3, Bot, Cpu, Database, Loader2, MessageSquare, Monitor, Moon, PanelLeft, PanelLeftClose, Plus, Rocket, ScrollText, Search, Settings, Smartphone, Sun } from 'lucide-react';
 import { ConversationList } from './ConversationList';
 import { useAppStore } from '../../lib/store';
 
@@ -57,6 +40,7 @@ export function Sidebar() {
     { path: '/dashboard', icon: BarChart3, label: 'Dashboard' },
     { path: '/data-sources', icon: Database, label: 'Data Sources' },
     { path: '/agents', icon: Bot, label: 'Agents' },
+    { path: '/phone', icon: Smartphone, label: 'Phone' },
     { path: '/logs', icon: ScrollText, label: 'Logs' },
     { path: '/settings', icon: Settings, label: 'Settings' },
     { path: '/get-started', icon: Rocket, label: 'Get Started' },
