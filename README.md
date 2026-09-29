@@ -1,3 +1,5 @@
+> **Not part of Ghost.** This is an unmodified copy of Stanford's OpenJarvis, kept for reference. `Open-jarvis` and `OpenJarvis` are identical. The copy that a Ghost box installs is `nextgent-openjarvis`.
+
 <div align="center">
   <img alt="OpenJarvis" src="assets/OpenJarvis_Horizontal_Logo.png" width="400">
 
