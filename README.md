@@ -1,3 +1,13 @@
+> **CultureReset public copy of [open-jarvis/OpenJarvis](https://github.com/open-jarvis/OpenJarvis), not a GitHub fork.** OpenJarvis, a personal AI assistant backend for your own devices.
+>
+> - **Why it is here:** An older public copy, kept for reference. The patched copy NODE runs is private.
+> - **Does anything run from it:** No.
+> - **License and updates:** as upstream. For updates and issues, use [upstream](https://github.com/open-jarvis/OpenJarvis).
+>
+> The upstream README follows unchanged.
+
+---
+
 <div align="center">
   <img alt="OpenJarvis" src="assets/OpenJarvis_Horizontal_Logo.png" width="400">
 
